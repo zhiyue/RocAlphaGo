@@ -88,6 +88,77 @@ cdef class Preprocess:
 
 
     @cython.nonecheck(False)
+    cdef int get_board_history(self, GameState state, tensor_type[ :, ::1 ] tensor, int offSet):
+        """
+           A feature encoding last 7 current player moves and last 7 opponent player moves on separate planes.
+           and all moves on the board by current player and opponent player
+           
+           - move  0 of current player ( last move by player )
+           - move -1 of current player ( before last move by player )
+           - move -2 of current player ( etc )
+           - move -3 of current player
+           - move -4 of current player
+           - move -5 of current player
+           - move -6 of current player
+           - all stones by on the board current player
+
+           - move  0 of opponent player ( last move by opponent )
+           - move -1 of opponent player ( before last move by opponent )
+           - move -2 of opponent player ( etc )
+           - move -3 of opponent player
+           - move -4 of opponent player
+           - move -5 of opponent player
+           - move -6 of opponent player
+           - all stones on the board by opponent player
+
+
+           TODO change it to the way alphago zero implements it?
+           this is a little deviation from alphago zero
+           - plane 0 all moves on the board opponent current  player at move 0 ( last move )
+           - plane 1 all moves on the board opponent opponent player at move 0 ( last move )
+           - plane 2 all moves on the board opponent current  player at move -1 ( before last move )
+           - plane 3 all moves on the board opponent opponent player at move -1 ( before last move )
+           - plane 4 all moves on the board opponent current  player at move -2 ( before before last move )
+           - plane 5 all moves on the board opponent opponent player at move -2 ( before before last move )
+           - etc
+        """
+
+        cdef short  location
+        cdef Group* group
+        cdef int    plane
+        cdef char   opponent = state.player_opponent
+        cdef Locations_List *history = state.moves_history
+        cdef int   age      = offSet + 2
+        cdef int   i
+
+        # loop over all locations on board
+        for location in range(self.board_size):
+
+            group = state.board_groups[ location ]
+
+            if group.colour == opponent:
+
+                plane = offSet + 1
+            else:
+
+                plane = offSet
+
+            tensor[ plane, location ] = 1
+
+        # loop over last 14 moves and set corresponding plane location
+        for i in range( history.count - 14, history.count ):
+
+            location = history.locations[ i ]
+
+            if location != _PASS:
+
+                tensor[ age, location ] = 1
+                age = age + 1
+
+        return offSet + 16
+
+
+    @cython.nonecheck(False)
     cdef int get_turns_since(self, GameState state, tensor_type[ :, ::1 ] tensor, int offSet):
         """
            A feature encoding the age of the stone at each location up to 'maximum'
@@ -692,7 +763,9 @@ cdef class Preprocess:
             if feat == "board":
                 processor            = self.get_board
                 self.output_dim     += 3
-
+            if feat == "boardhistory":
+                processor            = self.get_board_history
+                self.output_dim     += 16
             elif feat == "ones":
                 processor            = self.ones
                 self.output_dim     += 1

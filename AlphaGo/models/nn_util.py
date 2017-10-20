@@ -2,6 +2,7 @@ from keras import backend as K
 from keras.models import model_from_json
 from keras.engine.topology import Layer
 from AlphaGo.preprocessing.preprocessing import Preprocess
+from AlphaGo.preprocessing.preprocessing_rollout import Preprocess as PreprocessRollout
 import json
 
 
@@ -22,10 +23,16 @@ class NeuralNetBase(object):
         self.model and self.forward and the calling function should set them.
         """
         defaults = {
-            "board": 19
+            "board": 19,
+            "model_type": None
         }
         defaults.update(kwargs)
-        self.preprocessor = Preprocess(feature_list, size=defaults["board"])
+
+        # TODO: needs a different approach
+        if defaults["model_type"] is not None:
+            self.preprocessor = PreprocessRollout(feature_list, size=defaults["board"])
+        else:
+            self.preprocessor = Preprocess(feature_list, size=defaults["board"])
         kwargs["input_dim"] = self.preprocessor.get_output_dimension()
 
         if kwargs.get('init_network', True):

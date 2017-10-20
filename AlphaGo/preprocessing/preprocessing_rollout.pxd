@@ -60,6 +60,14 @@ cdef class Preprocess:
        plane 2 to empty locations
     """
 
+    cdef int get_board_history(self, GameState state, tensor_type[ :, ::1 ] tensor, int offSet)
+    """
+       A feature encoding WHITE BLACK and EMPTY on separate planes.
+       plane 0 always refers to the current player stones
+       plane 1 to the opponent stones
+       plane 2 to empty locations
+    """
+
     cdef int get_turns_since(self, GameState state, tensor_type[ :, ::1 ] tensor, int offSet)
     """
        A feature encoding the age of the stone at each location up to 'maximum'
