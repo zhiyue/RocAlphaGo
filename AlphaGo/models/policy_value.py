@@ -10,9 +10,45 @@ import numpy as np
 @neuralnet
 class CNNPolicyValue(NeuralNetBase):
     """
-       uses a convolutional neural network to evaluate the state of the game
-       and compute a probability distribution over the next action and win ratio for the currect position
+       uses a convolutional neural network with a residual block part to evaluate the state of a game
+       computes probability distribution over the next action and the win probability of the current player
     """
+
+    def _select_moves_and_normalize(self, nn_output, moves, size):
+        """
+           helper function to normalize a distribution over the given list of moves
+           and return a list of (move, prob) tuples
+        """
+
+        if len(moves) == 0:
+            return []
+        move_indices = [flatten_idx(m, size) for m in moves]
+        # add pass move location
+        move_indices.append( size * size )
+        # get network activations at legal move locations
+        distribution = nn_output[move_indices]
+        distribution = distribution / distribution.sum()
+        # add pass move value -> change to _PASS
+        moves.append(None)
+
+        return zip(moves, distribution)
+
+    def eval_state(self, state, moves=None):
+        """
+           Given a GameState object, returns a tuple with alist of (action, probability) pairs
+           according to the network outputs and win probability of current player
+
+           If a list of moves is specified, only those moves are kept in the distribution
+        """
+
+        tensor = self.preprocessor.state_to_tensor(state)
+        # run the tensor through the network
+        network_output = self.forward(tensor)
+        moves = moves or state.get_legal_moves()
+
+        actions = self._select_moves_and_normalize(network_output[0][0], moves, state.get_size())
+
+        return ( actions, network_output[1][0][0])
 
     @staticmethod
     def create_network(**kwargs):
@@ -102,4 +138,3 @@ class CNNPolicyValue(NeuralNetBase):
         network = Model( inp, [ policy, value ] )
 
         return network
-
