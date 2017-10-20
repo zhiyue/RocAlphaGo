@@ -58,11 +58,11 @@ class NeuralNetBase(object):
         # during training.
         if self.model.uses_learning_phase:
             forward_function = K.function([self.model.input, K.learning_phase()],
-                                          [self.model.output])
+                                          self.model.output)
 
             # the forward_function returns a list of tensors
             # the first [0] gets the front tensor.
-            return lambda inpt: forward_function([inpt, 0])[0]
+            return lambda inpt: forward_function([inpt, 0])
         else:
             # identical but without a second input argument for the learning phase
             forward_function = K.function([self.model.input], [self.model.output])
