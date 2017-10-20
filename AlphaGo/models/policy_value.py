@@ -35,7 +35,7 @@ class CNNPolicyValue(NeuralNetBase):
 
              value head
            - value_size:       size of fully connected layer for value output             (default 256)
-           - value_activation: value head output activation                               (default tahn)
+           - value_activation: value head output activation                               (default tanh)
         """
 
         defaults = {
@@ -47,7 +47,7 @@ class CNNPolicyValue(NeuralNetBase):
             "residual_filter" : 256,
             "residual_kernel" : 3,
             "value_size": 256,
-            "value_activation": 'tahn',
+            "value_activation": 'tanh',
         }
         # copy defaults, but override with anything in kwargs
         params = defaults
@@ -78,7 +78,7 @@ class CNNPolicyValue(NeuralNetBase):
             residual = Activation( params["activation"] )( residual )
 
             # add residual block input
-            layer = add( [ x, residual ] )
+            layer = add( [ layer, residual ] )
             layer = Activation( params["activation"] )( layer )
 
 
