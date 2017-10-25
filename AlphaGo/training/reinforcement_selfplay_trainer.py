@@ -10,6 +10,7 @@ DEFAULT_OPTIMIZER       = 'SGD'
 DEFAULT_LEARNING_RATE   = .003
 DEFAULT_BATCH_SIZE      = 16
 DEFAULT_EPOCH_SIZE      = 10000
+DEFAULT_TEST_AMOUNT     = 400
 DEFAULT_TRAIN_EVERY     = 10000
 DEFAULT_SIMULATIONS     = 1600
 DEFAULT_RESIGN_TRESHOLD = 0.05
@@ -17,6 +18,8 @@ DEFAULT_ALLOW_RESIGN    = 0.9
 
 # metdata file
 FILE_METADATA = 'metadata_policy_value_reinforcement.json'
+# hdf5 training file
+FILE_METADATA = 'training_samples.hdf5'
 # weight folder
 FOLDER_WEIGHT = os.path.join('policy_value_reinforcement_weights')
 # folder sgf files
@@ -128,16 +131,20 @@ class Games_Generator( Process ):
 
             training_positions = []
             state   = GameState( size = self.board_size )
-            request = self.preprocessor.state_to_tensor( state )
-            self.queue_requests.put( request )
+            request = self.preprocessor.state_to_single_tensor( state )
+            self.queue_requests.put( ( self.id, request ) )
 
             # blocks 
-            prediction = self.queue_predictions.get()
+            policy, value = self.queue_predictions.get()
 
-            root = MCTS_Tree_Node( state, prediction[ 0 ], prediction[ 1 ] )
+            root = MCTS_Tree_Node( state, policy, value )
+
+            for i in range( 200 ):
+                request = self.preprocessor.state_to_single_tensor( state )
+                self.queue_requests.put( ( self.id, request ) )
+                policy, value = self.queue_predictions.get()
 
             # untill game terminates
-
                 # expand gametree x times
 
                 # select best move, create training_position data,
@@ -146,7 +153,7 @@ class Games_Generator( Process ):
             # increment counter
             sgf_id = self.game_count.increment()
             # save sgf
-            print 'no hi'
+            print 'no hi ' + str( sgf_id )
 
 
 class Games_Saver( Process ):
@@ -170,6 +177,17 @@ class Games_Saver( Process ):
             print 'stored ' + str( len( training_samples ) ) + ' samples'
 
 
+def save_metadata( metadata ):
+    """
+       Save metadata
+    """
+
+    # update metadata file        
+    with open( metadata['meta_file'], "w" ) as f:
+
+        json.dump(metadata, f, indent=2)
+
+
 def save_model( out_directory, model, version ):
     """
        Save network model weights to file and return file name
@@ -182,13 +200,30 @@ def save_model( out_directory, model, version ):
     return file_name
 
 
+def train_and_save_model( out_directory, model, metadata  ):
+    """
+       train model, save and return file name
+    """
+
+    return save_model( out_directory, model, metadata['epoch_count'] )
+
+
+def compare_strenght( current_network_weight_file, new_network_weight_file, amount ):
+    """
+       let both network play vs eachother for #amount games
+       return winning ratio for new model 
+    """
+
+    return 0.5
+
+
 def run_training( metadata, out_directory, verbose ):
     """
        
     """
 
     # metadata file location
-    meta_file = os.path.join(out_directory, FILE_METADATA)
+    metadata['meta_file'] = os.path.join(out_directory, FILE_METADATA)
 
     # create network
     network = CNNPolicyValue.load_model(metadata["model_file"])
@@ -198,7 +233,7 @@ def run_training( metadata, out_directory, verbose ):
         # save initial model
         metadata["best_model"] = save_model( out_directory, network.model, 0 )
         # get model board size
-        metadata["board_size"] = 19
+        metadata["board_size"] = network.model.input_shape[-1]
         # get model feature list
         metadata["feature_list"] = network.preprocessor.get_feature_list()
     else:
@@ -226,34 +261,55 @@ def run_training( metadata, out_directory, verbose ):
                                   metadata["board_size"], metadata["allow_resign"], metadata["resign_treshold"] )
         worker.start()
 
-    version = 1
     while True:
 
         # start processing forward requests untill enough games have been played
         while game_count.get_value() < metadata['next_training_point']:
 
             metadata['game_count'] = game_count.get_value()
+            requests   = []
+            worker_ids = []
+
+            # get as many request as possible
+            while not queue_requests.empty():
+
+                worker_id, request = queue_requests.get()
+                requests.append( request )
+                worker_ids.append( worker_id )
             
-            # get all request and forward
+            print 'requests ' + str( len( requests ) )
 
-            # return prediction to corresponding worker
+            if len( requests ) > 0:
 
-        # train new model
+                # predict all requests
+                predictions = network.forward( requests )
 
-        metadata['next_training_point'] += metadata['train_every']
+                # return prediction to corresponding worker
+                for worker_id, policy, value in zip( worker_ids, predictions[ 0 ], predictions[ 1 ]  ):
 
-        # save new model
-        save_model( out_directory, network.model, metadata['epoch_count'] )
-        metadata['epoch_count'] += 1
+                    # add policy and value prediction to worker queue
+                    queue_predictions[ worker_id ].put( ( policy, value ) )
+
+
+        # train and save new model
+        new_model_file = train_and_save_model( out_directory, network.model, metadata )
 
         # test model strength vs old version
-    
-        # update metadata file        
-        with open(meta_file, "w") as f:
-            json.dump(metadata, f, indent=2)
+        ratio = compare_strenght( metadata['best_model'], new_model_file, metadata['test_amount'] )
 
-        
-        version += 1
+        # check if new model beats previous model
+        if ratio >= 0.55:
+
+            metadata['best_model'] = new_model_file
+            # load best model
+            network.model.load_weights(os.path.join(out_directory, FOLDER_WEIGHT, metadata['best_model']))
+
+        # update for next training point
+        metadata['epoch_count'] += 1
+        metadata['next_training_point'] += metadata['train_every']
+
+        # update metadata file        
+        save_metadata( metadata )
 
 
 def start_training(args):
@@ -269,6 +325,7 @@ def start_training(args):
         "model_verions": [],
         "allow_resign": args.allow_resign,
         "train_every": args.train_every,
+        "test_amount": args.test_amount,
         "simulations": args.simulations,
         "epoch_size": args.epoch_size,
         "batch_size": args.minibatch,
@@ -323,6 +380,8 @@ def resume_training(args):
     else:
         raise ValueError("Metadata file not found!")
 
+    # check if we need to train or validate new model
+
     # start training
     run_training( metadata, args.out_directory, args.verbose )
 
@@ -351,6 +410,7 @@ def handle_arguments( cmd_line_args=None ):
     train.add_argument("--verbose", "-v", help="Turn on verbose mode", default=False, action="store_true")  # noqa: E501
     train.add_argument("--minibatch", "-B", help="Size of training data minibatches. Default: " + str(DEFAULT_BATCH_SIZE), type=int, default=DEFAULT_BATCH_SIZE)  # noqa: E501
     train.add_argument("--epoch-size", "-E", help="Amount of batches per epoch. Default: " + str(DEFAULT_EPOCH_SIZE), type=int, default=DEFAULT_EPOCH_SIZE)  # noqa: E501
+    train.add_argument("--test-amount", help="Amount of games to play to determine best model. Default: " + str(DEFAULT_TEST_AMOUNT), type=int, default=DEFAULT_TEST_AMOUNT)  # noqa: E501
     train.add_argument("--train-every", "-T", help="Train new model after this many games. Default: " + str(DEFAULT_TRAIN_EVERY), type=int, default=DEFAULT_TRAIN_EVERY)  # noqa: E501
     train.add_argument("--optimizer", "-O", help="Used optimizer. (SGD) Default: " + DEFAULT_OPTIMIZER, type=str, default=DEFAULT_OPTIMIZER)  # noqa: E501
     train.add_argument("--simulations", "-s", help="Amount of MCTS simulations per move. Default: " + str(DEFAULT_SIMULATIONS), type=int, default=DEFAULT_SIMULATIONS)  # noqa: E501
