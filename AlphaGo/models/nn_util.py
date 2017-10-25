@@ -2,7 +2,6 @@ from keras import backend as K
 from keras.models import model_from_json
 from keras.engine.topology import Layer
 from AlphaGo.preprocessing.preprocessing import Preprocess
-from AlphaGo.preprocessing.preprocessing_rollout import Preprocess as PreprocessRollout
 import json
 
 
@@ -29,10 +28,8 @@ class NeuralNetBase(object):
         defaults.update(kwargs)
 
         # TODO: needs a different approach
-        if defaults["model_type"] is not None:
-            self.preprocessor = PreprocessRollout(feature_list, size=defaults["board"])
-        else:
-            self.preprocessor = Preprocess(feature_list, size=defaults["board"])
+        self.preprocessor = self.get_preprocessor(feature_list, defaults["board"])
+
         kwargs["input_dim"] = self.preprocessor.get_output_dimension()
 
         if kwargs.get('init_network', True):
@@ -41,6 +38,13 @@ class NeuralNetBase(object):
             self.model = self.__class__.create_network(**kwargs)
             # self.forward is a lambda function wrapping a Keras function
             self.forward = self._model_forward()
+
+    def get_preprocessor(self, feature_list, board_size):
+        """
+           return preprocessor
+        """
+
+        return Preprocess(feature_list, size=board_size)
 
     def _model_forward(self):
         """Construct a function using the current keras backend that, when given a batch
@@ -56,6 +60,7 @@ class NeuralNetBase(object):
         # In these cases, K.learning_phase() is a reference to a backend variable that should
         # be set to 0 when using the network in prediction mode and is automatically set to 1
         # during training.
+
         if self.model.uses_learning_phase:
             forward_function = K.function([self.model.input, K.learning_phase()],
                                           [self.model.output])

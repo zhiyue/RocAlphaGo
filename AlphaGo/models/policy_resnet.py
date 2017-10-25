@@ -4,94 +4,71 @@ from keras.layers.merge import add
 from keras.layers.core import Activation, Flatten
 from AlphaGo.util import flatten_idx
 from AlphaGo.models.nn_util import Bias, NeuralNetBase, neuralnet
-from AlphaGo.preprocessing.preprocessing_rollout import Preprocess
 import numpy as np
 
 
 @neuralnet
-class CNNPolicyValue(NeuralNetBase):
+class CNNPolicyResnet(NeuralNetBase):
     """
-       uses a convolutional neural network with a residual block part to evaluate the state of a game
-       computes probability distribution over the next action and the win probability of the current player
+       uses a convolutional neural network with residual blocks to evaluate the state of the game
+       and compute a probability distribution over the next action
     """
-
-    def get_preprocessor(self, feature_list, board_size):
-        """
-           return preprocessor (override as we use rollout preprocessor)
-        """
-
-        return Preprocess(feature_list, size=board_size)
-
-    def _model_forward(self):
-        """
-           we have to override this functions because this network has multiple outputs
-
-           Construct a function using the current keras backend that, when given a batch
-           of inputs, simply processes them forward and returns the output
-
-           This is as opposed to model.compile(), which takes a loss function
-           and training method.
-
-           c.f. https://github.com/fchollet/keras/issues/1426
-        """
-        # The uses_learning_phase property is True if the model contains layers that behave
-        # differently during training and testing, e.g. Dropout or BatchNormalization.
-        # In these cases, K.learning_phase() is a reference to a backend variable that should
-        # be set to 0 when using the network in prediction mode and is automatically set to 1
-        # during training.
-
-        if self.model.uses_learning_phase:
-            forward_function = K.function([self.model.input, K.learning_phase()],
-                                          self.model.output)
-
-            # the forward_function returns a list of tensors
-            # the first [0] gets the front tensor.
-            return lambda inpt: forward_function([inpt, 0])
-        else:
-            # identical but without a second input argument for the learning phase
-            forward_function = K.function([self.model.input], self.model.output)
-            return lambda inpt: forward_function([inpt])
 
     def _select_moves_and_normalize(self, nn_output, moves, size):
+        """helper function to normalize a distribution over the given list of moves
+        and return a list of (move, prob) tuples
         """
-           helper function to normalize a distribution over the given list of moves
-           and return a list of (move, prob) tuples
-        """
-
         if len(moves) == 0:
             return []
         move_indices = [flatten_idx(m, size) for m in moves]
-        # add pass move location
-        move_indices.append( size * size )
         # get network activations at legal move locations
         distribution = nn_output[move_indices]
         distribution = distribution / distribution.sum()
-        # add pass move value -> change to _PASS
-        moves.append(None)
-
         return zip(moves, distribution)
 
+    def batch_eval_state(self, states, moves_lists=None):
+        """Given a list of states, evaluates them all at once to make best use of GPU
+        batching capabilities.
+
+        Analogous to [eval_state(s) for s in states]
+
+        Returns: a parallel list of move distributions as in eval_state
+        """
+        n_states = len(states)
+        if n_states == 0:
+            return []
+        state_size = states[0].get_size()
+        if not all([st.get_size() == state_size for st in states]):
+            raise ValueError("all states must have the same size")
+        # concatenate together all one-hot encoded states along the 'batch' dimension
+        nn_input = np.concatenate([self.preprocessor.state_to_tensor(s) for s in states], axis=0)
+        # pass all input through the network at once (backend makes use of
+        # batches if len(states) is large)
+        network_output = self.forward(nn_input)
+        # default move lists to all legal moves
+        moves_lists = moves_lists or [st.get_legal_moves() for st in states]
+        results = [None] * n_states
+        for i in range(n_states):
+            results[i] = self._select_moves_and_normalize(network_output[i], moves_lists[i],
+                                                          state_size)
+        return results
+
     def eval_state(self, state, moves=None):
-        """
-           Given a GameState object, returns a tuple with alist of (action, probability) pairs
-           according to the network outputs and win probability of current player
+        """Given a GameState object, returns a list of (action, probability) pairs
+        according to the network outputs
 
-           If a list of moves is specified, only those moves are kept in the distribution
+        If a list of moves is specified, only those moves are kept in the distribution
         """
-
         tensor = self.preprocessor.state_to_tensor(state)
         # run the tensor through the network
         network_output = self.forward(tensor)
         moves = moves or state.get_legal_moves()
-
-        actions = self._select_moves_and_normalize(network_output[0][0], moves, state.get_size())
-
-        return ( actions, network_output[1][0][0])
+        return self._select_moves_and_normalize(network_output[0], moves, state.get_size())
 
     @staticmethod
     def create_network(**kwargs):
         """
-           construct a alphago zero style residual neural network.
+           construct a residual neural policy network.
 
            Keword Arguments:
            - board:            width of the go board to be processed                      (default 19)
@@ -107,10 +84,6 @@ class CNNPolicyValue(NeuralNetBase):
                                also used for pre residual block convolution as 
                                they have to be equal
            - residual_kernel:  kernel size used in first residual block convolution layer (default 3)   (Must be odd)
-
-             value head
-           - value_size:       size of fully connected layer for value output             (default 256)
-           - value_activation: value head output activation eg relu sigmoid tanh          (default tanh)
         """
 
         defaults = {
@@ -119,9 +92,7 @@ class CNNPolicyValue(NeuralNetBase):
             "conv_kernel" : 3,
             "residual_depth" : 39,
             "residual_filter" : 256,
-            "residual_kernel" : 3,
-            "value_size": 256,
-            "value_activation": 'tanh',
+            "residual_kernel" : 3
         }
         # copy defaults, but override with anything in kwargs
         params = defaults
@@ -157,23 +128,16 @@ class CNNPolicyValue(NeuralNetBase):
 
 
         # create policy head
-        policy = Conv2D( 2, ( 1, 1 ) )( layer )
+        policy = Conv2D( 1, ( 1, 1 ) )( layer )
         policy = BatchNormalization()( policy )
         policy = Activation( params["activation"] )( policy )
         policy = Flatten()( policy )
-        # board * board for board locations, +1 for pass move
-        policy = Dense( ( params["board"] * params["board"] ) + 1, activation='softmax', name='policy_output' )( policy )
-
-        # create value head
-        value = Conv2D(1, (1, 1) )( layer )
-        value = BatchNormalization()( value )
-        value = Activation( params["activation"] )( value )
-        value = Flatten()( value )
-        value = Dense( params["value_size"], activation=params["activation"] )( value )
-        value = Dense( 1, activation=params["value_activation"], name='value_output' )( value )
+        # board * board for board locations
+        policy = Dense( params["board"] * params["board"], activation='softmax', name='policy_output' )( policy )
 
         # create the network:
-        network = Model( inp, [ policy, value ] )
+        network = Model( inp, policy )
+
 
         return network
 
