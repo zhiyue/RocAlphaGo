@@ -1,0 +1,15 @@
+# yml配置文件格式版本为2
+version: '2'
+services:
+# 定义一个名叫 jupyter 的 service
+  jupyter:
+# 基于当前目录构建镜像
+    build: .
+    image: zhiyue/alphago:0.0.1
+# 映射端口
+    ports:
+    - "8999:8888"
+    - "8998:6006"
+# 映射文件路径
+    volumes:
+    - .:/app
